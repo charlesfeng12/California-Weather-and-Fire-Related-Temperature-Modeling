@@ -1,0 +1,490 @@
+
+```{r}
+# Load the packages that is used in this project
+#install.packages("car")
+#install.packages("patchwork")
+#install.packages("skimr")
+#install.packages("broom")
+#install.packages("tidyr")
+#install.packages("pander")
+#install.packages("stargazer")
+library(stargazer)
+library(broom)
+library(skimr)
+library(patchwork)
+library(car)
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+library(pander)
+library(MASS)
+library(gridExtra)
+```
+
+
+```{r}
+Data = read.csv(file="CA_Weather_Fire_Dataset_1984-2025.csv", header=T, sep=",")
+Data <- na.omit(Data)
+Data$YEAR_adj <- Data$YEAR - min(Data$YEAR)
+
+
+# 1. Convert Day of Year to Radians
+# We use 2*pi because a full circle (year) is 2*pi radians.
+# We divide by 365 (or 366 for leap years) to normalize it.
+radians <- 2 * pi * Data$DAY_OF_YEAR / 365
+
+# 2. Create the Sine Component
+# Captures the "East-West" movement of the seasonal cycle
+Data$Day_Sin <- sin(radians)
+
+# 3. Create the Cosine Component
+# Captures the "North-South" movement of the seasonal cycle
+Data$Day_Cos <- cos(radians)
+
+Data$FIRE_START_DAY <- as.factor(Data$FIRE_START_DAY)
+CData <- Data[c(2:6,12,13,15:17)]
+
+CData <- na.omit(CData)
+```
+### Estimating Trend/EDA
+
+```{r echo=FALSE, fig.height=15, fig.width=20}
+#EDA
+histo_response <- ggplot(CData, aes(x = MAX_TEMP)) +
+  geom_histogram(bins = 20, fill = "purple", color = "black", alpha = 0.7) +
+  labs(
+    title = "Distribution of Response Variable (MAX_TEMP)",
+    x = "MAX_TEMP",
+    y = "Degree in F"
+  ) +
+  theme_minimal()
+
+box_response <- ggplot(CData, aes(y = MAX_TEMP)) +
+  geom_boxplot(fill = "lightblue", color = "black", outlier.shape = 1) + # outlier.shape=1 shows outliers as circles
+  labs(
+    title = "Boxplot of Response Variable (MAX_TEMP)",
+    y = "MAX_TEMP"
+  ) +
+  theme_minimal() +
+  theme(axis.text.x = element_blank(), # Remove x-axis text as there's only one box
+        axis.ticks.x = element_blank()) # Remove x-axis ticks
+
+(histo_response | box_response)
+```
+
+
+```{r echo=FALSE, fig.height=15, fig.width=20}
+# --- 1. Create Individual Plots for Each Predictor ---
+
+# Numerical Predictors (Histograms)
+p1 <- ggplot(CData, aes(x = PRECIPITATION)) +
+  geom_histogram(bins = 30, fill = "skyblue", color = "black") +
+  theme_minimal() +
+  labs(title = "Precipitation", x = "Inches", y = "Count")
+
+p2 <- ggplot(CData, aes(x = AVG_WIND_SPEED)) +
+  geom_histogram(bins = 30, fill = "skyblue", color = "black") +
+  theme_minimal() +
+  labs(title = "Avg Wind Speed", x = "Speed", y = "Count")
+
+p3 <- ggplot(CData, aes(x = MIN_TEMP)) +
+  geom_histogram(bins = 20, fill = "skyblue", color = "black") +
+  theme_minimal() +
+  labs(title = "Min Temp", x = "Temperature in F", y = "Count")
+
+p4 <- ggplot(CData, aes(x = LAGGED_AVG_WIND_SPEED)) +
+  geom_histogram(bins = 30, fill = "skyblue", color = "black") +
+  theme_minimal() +
+  labs(title = "Lagged Avg Wind Speed in mph", x = "Speed", y = "Count")
+
+p5 <- ggplot(CData, aes(x = LAGGED_PRECIPITATION)) +
+  geom_histogram(bins = 30, fill = "skyblue", color = "black") +
+  theme_minimal() +
+  labs(title = "Day of Year", x = "Day (1-365)", y = "Count")
+
+p6 <- ggplot(CData, aes(x = YEAR_adj)) +
+  geom_histogram(bins = 20, fill = "skyblue", color = "black") +
+  theme_minimal() +
+  labs(title = "Adjusted Year", x = "Year Index", y = "Count")
+
+# Categorical Predictor (Bar Chart)
+p7<- ggplot(CData, aes(x = FIRE_START_DAY)) +
+  geom_bar(fill = "salmon", color = "black") +
+  theme_minimal() +
+  labs(title = "Fire Start Day", x = "Category", y = "Count")
+
+# --- 2. Arrange Plots in a Grid ---
+grid.arrange(p1, p2, p3, p4, p5, p6, p7, ncol = 3)
+```
+
+EDA ends
+
+### Assumption Validating_Step 2(after checking for assumptions)
+
+```{r}
+# assumption validation methods
+CData$MAX_TEMP_inv <- 1/CData$MAX_TEMP^1.2
+CData$PRECIPITATION_trans <- 1/(CData$PRECIPITATION + 0.1)^3
+CData$AVG_WIND_SPEED_trans <- log(CData$AVG_WIND_SPEED)
+CData$LAGGED_PRECIPITATION_trans <- 1/(CData$LAGGED_PRECIPITATION + 0.1)^1.4
+```
+
+### Variable/Model Selection(after preliminary model was fitted and the assumption checks, which actually is just our final_model)
+
+```{r}
+final_model <- lm(MAX_TEMP_inv ~ Day_Sin + Day_Cos + MIN_TEMP + AVG_WIND_SPEED_trans + LAGGED_PRECIPITATION_trans + Day_Cos:MIN_TEMP + Day_Cos:AVG_WIND_SPEED_trans +
+    LAGGED_AVG_WIND_SPEED + FIRE_START_DAY + PRECIPITATION_trans + AVG_WIND_SPEED_trans:PRECIPITATION_trans + LAGGED_PRECIPITATION_trans:PRECIPITATION_trans + MIN_TEMP:LAGGED_PRECIPITATION_trans +
+    YEAR_adj, data = CData)
+```
+
+```{r}
+BICdf <- CData[c(3, 5, 7:14)]
+stepAIC(lm(MAX_TEMP_inv ~ Day_Sin + Day_Cos + MIN_TEMP + AVG_WIND_SPEED_trans + LAGGED_PRECIPITATION_trans + Day_Cos:MIN_TEMP + Day_Cos:AVG_WIND_SPEED_trans +
+    LAGGED_AVG_WIND_SPEED + FIRE_START_DAY + PRECIPITATION_trans + AVG_WIND_SPEED_trans:PRECIPITATION_trans + LAGGED_PRECIPITATION_trans:PRECIPITATION_trans + MIN_TEMP:LAGGED_PRECIPITATION_trans +
+    YEAR_adj, data = BICdf), direction = 'both', k = log(n))
+```
+
+```{r}
+stepAIC(lm(MAX_TEMP_inv ~ Day_Sin + Day_Cos + MIN_TEMP + AVG_WIND_SPEED_trans + LAGGED_PRECIPITATION_trans + Day_Cos:MIN_TEMP + Day_Cos:AVG_WIND_SPEED_trans +
+    LAGGED_AVG_WIND_SPEED + FIRE_START_DAY + PRECIPITATION_trans + AVG_WIND_SPEED_trans:PRECIPITATION_trans + LAGGED_PRECIPITATION_trans:PRECIPITATION_trans + MIN_TEMP:LAGGED_PRECIPITATION_trans +
+    YEAR_adj, data = BICdf), direction = 'both', k = 2)
+```
+
+```{r}
+aic_model <- lm(formula = MAX_TEMP_inv ~ Day_Sin + Day_Cos + MIN_TEMP + AVG_WIND_SPEED_trans + 
+    LAGGED_PRECIPITATION_trans + Day_Cos:MIN_TEMP + Day_Cos:AVG_WIND_SPEED_trans + 
+    LAGGED_AVG_WIND_SPEED + FIRE_START_DAY + PRECIPITATION_trans + 
+    AVG_WIND_SPEED_trans:PRECIPITATION_trans + LAGGED_PRECIPITATION_trans:PRECIPITATION_trans + 
+    MIN_TEMP:LAGGED_PRECIPITATION_trans + YEAR_adj, data = CData)
+```
+
+
+```{r}
+bic_model <- lm(formula = MAX_TEMP_inv ~ Day_Sin + Day_Cos + MIN_TEMP + AVG_WIND_SPEED_trans + 
+    LAGGED_PRECIPITATION_trans + LAGGED_AVG_WIND_SPEED + FIRE_START_DAY + 
+    PRECIPITATION_trans + YEAR_adj + Day_Cos:AVG_WIND_SPEED_trans + 
+    AVG_WIND_SPEED_trans:PRECIPITATION_trans + MIN_TEMP:LAGGED_PRECIPITATION_trans, 
+    data = CData)
+```
+
+
+```{r}
+AIC(bic_model)
+BIC(bic_model)
+AIC(final_model)
+BIC(final_model)
+# final_model is the model we manually choose, and the AIC automated selection agrees with us, and BIC does not. Since for both model AIC does not fully agree with BIC(only a small gap), and it turn out that our model has better coefficients of determination(R^2) and adjusted R^2 means that our model explains more variation than BIC selected model does, and also for BIC selected model the AIC does not agree with BIC too in about the same difference, our model is better at AIC, selected is better at BIC. In the consideration of meteorological knowledge in the real world, two removed interaction terms is useful and significantly affect each other(temperatures changes with different seasons, rains or not in the last 7 days does affect the prediction of precipitation today). Thus we decided to keep those two terms.
+```
+
+```{r}
+# T Test and summary
+# 1. Extract the coefficient table
+coef_mat <- coef(summary(final_model))
+
+# 2. Convert to Data Frame and fix Row Names
+# We move the row names (predictors) into a real column named "Predictor"
+coef_df <- as.data.frame(coef_mat)
+coef_df <- tibble::rownames_to_column(coef_df, var = "Predictor")
+
+# 3. Print with pander
+pander(coef_df, 
+       style = "rmarkdown", 
+       split.table = Inf,       # Forces single table
+       split.cells = Inf,       # Prevents wrapping text inside cells
+       caption = "Summary of Final Model")
+null_model <- lm(MAX_TEMP_inv ~ 1, data = CData)
+# ANOVA Overall Test
+anova(null_model, final_model)
+# Partial F Test for bic autoselected model
+anova(bic_model, final_model)
+# Partial F test for lower p value predictors in the T test with its interaction terms
+reduced_model <- lm(MAX_TEMP_inv ~ Day_Sin + Day_Cos + MIN_TEMP +  LAGGED_PRECIPITATION_trans + Day_Cos:MIN_TEMP +
+    LAGGED_AVG_WIND_SPEED + FIRE_START_DAY + PRECIPITATION_trans  + LAGGED_PRECIPITATION_trans:PRECIPITATION_trans + MIN_TEMP:LAGGED_PRECIPITATION_trans +
+    YEAR_adj, data = CData)
+anova(reduced_model, final_model)
+#The avrage wind speed has a large P value in T test, but it has interaction term with seasonality and precipitation, and their P value is extremely small, by the hierarchy principle, the effect of main effect term may shift to the interaction term, so avrage wind speed needs to stay in the model. The Partial F Test with a p value < 2.2e-16 also support my conclusion.
+#ANOVA Overall Test with a p value < 2.2e-16 indicated that a statistically significant linear relationship exists for at least one predictor
+#Partial F Test with a p value at 0.004976 and T test with p value at 0.02141, 0.01974 for Day_Cos:MIN_TEMP and LAGGED_PRECIPITATION_trans:PRECIPITATION_trans indicates that there exist a significant linear relationship between: both two interaction terms with response and two terms individually with response. Thus no predictor is needed to be delete from the model.
+```
+
+Variable/Model Selection ends
+### Assumptions Check
+
+```{r echo=FALSE, fig.height=50, fig.width=40}
+# Plots parameters
+standardized_r <- rstandard(final_model)
+e_hat <- resid(final_model)
+y_hat <- fitted(final_model)
+residual_df <- data.frame(residuals = e_hat, std_resid = standardized_r)
+residual_fitted_df <- data.frame(residuals = e_hat, fitted = y_hat, std_resid = standardized_r)
+plot_df <- cbind(CData, residuals = e_hat, std_resid = standardized_r, DAY_OF_YEAR = Data$DAY_OF_YEAR)
+pair_df <- cbind(CData, residuals = e_hat, std_resid = standardized_r)
+
+# Define a border theme to separate plots visually ---
+border_theme <- theme(
+  plot.background = element_rect(color = "black", linewidth = 0.5, fill = NA)
+)
+
+# 1. The "Real" Check: Residuals vs. Day of Year
+# This checks if your Sin/Cos terms successfully removed the seasonality
+resid_vs_doy_plot <- ggplot(plot_df, aes(x = DAY_OF_YEAR, y = std_resid)) +
+  geom_point(alpha = 0.3, color = "gray") +
+  geom_hline(yintercept = 0, color = "red", linetype = "dashed") +
+  geom_smooth(se = FALSE, color = "blue") + # Look for waves here
+  labs(title = "Residuals vs. Day of Year",
+       subtitle = "If the blue line is wavy, the Sin/Cos model missed some seasonality.",
+       x = "Day of Year (1-365)", y = "Residuals") +
+  theme_minimal()
+
+# 2. Visualizing Interaction: Seasonality * Precipitation
+# We categorize precipitation to see how the seasonal curve changes when it rains
+interact_data <- plot_df %>%
+  mutate(Rain_Status = ifelse(PRECIPITATION > 0, "Wet Day", "Dry Day"))
+
+interact_season_plot <- ggplot(interact_data, aes(x = DAY_OF_YEAR, y = MAX_TEMP, color = Rain_Status)) +
+  geom_point(alpha = 0.1) + 
+  
+  # Add the smooth trend lines for Wet vs Dry
+  geom_smooth(method = "gam", formula = y ~ s(x, bs = "cs"), se = FALSE, size = 1.5) +
+  
+  labs(title = "Interaction: How Rain Affects the Seasonal Cycle",
+       subtitle = "Does the gap between Red (Dry) and Blue (Wet) change throughout the year?",
+       x = "Day of Year", y = "Max Temperature (inversed form with inversed slope)") +
+  theme_minimal()
+
+
+# --- 1. Response vs Fitted (Observed vs Predicted) ---
+# Check linearity and model accuracy
+response_vs_fitted_plot <- ggplot(plot_df, aes(x = y_hat, y = MAX_TEMP_inv)) +
+  geom_point(alpha = 0.6) +
+  geom_abline(intercept = 0, slope = 1, linetype = "dashed", color = "red") + # The perfect prediction line
+  labs(title = "Response vs Fitted",
+       subtitle = "Ideally, points should hug the red dashed line",
+       x = "Fitted Values (Predicted Max Temp)",
+       y = "Observed Max Temp") +
+  theme_minimal()
+
+# --- 2. Normal Q-Q Plot ---
+# Check normality of residuals
+qq_plot <- ggplot(residual_df, aes(sample = std_resid)) +
+  stat_qq() +
+  stat_qq_line(color = "red") +
+  labs(title = "Normal Q-Q Plot of Residuals",
+       subtitle = "Ideally, points should fall on the red line",
+       x = "Theoretical Quantiles",
+       y = "Sample Quantiles") +
+  theme_minimal()
+
+# --- 3. Residuals vs Fitted ---
+# Check for heteroscedasticity (fanning) and non-linearity
+resid_vs_fitted_plot <- ggplot(residual_fitted_df, aes(x = fitted, y = std_resid)) +
+  geom_point(alpha = 0.5) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "red") +
+  labs(title = "Residuals vs Fitted",
+       subtitle = "Ideally, a random cloud centered around 0 (No patterns/cones)",
+       x = "Fitted Values",
+       y = "Residuals") +
+  theme_minimal()
+
+# --- 4. Residuals vs Each Predictor ---
+
+# Numerical Predictor: Precipitation
+resid_vs_precip_plot <- ggplot(plot_df, aes(x = PRECIPITATION_trans, y = std_resid)) +
+  geom_point(alpha = 0.5) +
+  labs(title = "Residuals vs Precipitation",
+       x = "Precipitation", y = "Residuals") +
+  theme_minimal()
+
+# Numerical Predictor: Avg Wind Speed
+resid_vs_wind_plot <- ggplot(plot_df, aes(x = AVG_WIND_SPEED_trans, y = std_resid)) +
+  geom_point(alpha = 0.5) +
+  labs(title = "Residuals vs Avg Wind Speed",
+       x = "Avg Wind Speed", y = "Residuals") +
+  theme_minimal()
+
+# Numerical Predictor: Min Temp
+resid_vs_temprange_plot <- ggplot(plot_df, aes(x = MIN_TEMP, y = std_resid)) +
+  geom_point(alpha = 0.5) +
+  labs(title = "Residuals vs Min Temp",
+       x = "Min Temp", y = "Residuals") +
+  theme_minimal()
+
+# Numerical Predictor: Lagged Precipetation
+resid_vs_ratio_plot <- ggplot(plot_df, aes(x = LAGGED_PRECIPITATION_trans, y = std_resid)) +
+  geom_point(alpha = 0.5) +
+  labs(title = "Residuals vs Lagged Precipetation",
+       x = "Lagged Precipetation", y = "Residuals") +
+  theme_minimal()
+
+# Numerical Predictor: Lagged Wind Speed
+resid_vs_lagwind_plot <- ggplot(plot_df, aes(x = LAGGED_AVG_WIND_SPEED, y = std_resid)) +
+  geom_point(alpha = 0.5) +
+  labs(title = "Residuals vs Lagged Avg Wind Speed",
+       x = "Lagged Avg Wind Speed", y = "Residuals") +
+  theme_minimal()
+
+# Numerical Predictor: Day cos
+resid_vs_day_cos_plot <- ggplot(plot_df, aes(x = Day_Cos, y = std_resid)) +
+  geom_point(alpha = 0.5) +
+  labs(title = "Residuals vs Day cos transformation",
+       x = "Day cos", y = "Residuals") +
+  theme_minimal()
+
+# Numerical Predictor: Day sin
+resid_vs_day_sin_plot <- ggplot(plot_df, aes(x = Day_Sin, y = std_resid)) +
+  geom_point(alpha = 0.5) +
+  labs(title = "Residuals vs Day sin transformation",
+       x = "Day sin", y = "Residuals") +
+  theme_minimal()
+
+# Numerical Predictor: Adjusted Year
+resid_vs_year_plot <- ggplot(plot_df, aes(x = YEAR_adj, y = std_resid)) +
+  geom_point(alpha = 0.5) +
+  labs(title = "Residuals vs Year (Adj)",
+       x = "Year (Adjusted)", y = "Residuals") +
+  theme_minimal()
+
+# Categorical Predictor: Fire Start Day (Boxplot)
+resid_vs_fire_plot <- ggplot(plot_df, aes(x = FIRE_START_DAY, y = std_resid)) +
+  geom_boxplot(aes(fill = FIRE_START_DAY)) +
+  labs(title = "Residuals vs Fire Start Day",
+       x = "Fire Start Day", y = "Residuals") +
+  theme_minimal()
+
+plot_list <- list(
+  response_vs_fitted_plot, qq_plot, resid_vs_fitted_plot,
+  resid_vs_doy_plot, interact_season_plot, resid_vs_day_sin_plot, resid_vs_day_cos_plot,
+  resid_vs_temprange_plot, resid_vs_precip_plot, resid_vs_ratio_plot,
+  resid_vs_wind_plot, resid_vs_lagwind_plot, resid_vs_year_plot, resid_vs_fire_plot
+)
+
+# You can skip this loop if you don't want borders, but it helps alignment
+plots_with_borders <- lapply(plot_list, function(p) p + border_theme)
+
+# --- Construct the Patchwork Layout ---
+
+# Row 1: Model Performance (3 Plots)
+row1 <- plots_with_borders[[1]] | plots_with_borders[[2]] | plots_with_borders[[3]]
+
+# Row 2: Seasonality & Cyclical Terms (4 Plots - Tightly Grouped)
+# Day of Year | Interaction | Sine | Cosine
+row2 <- plots_with_borders[[4]] | plots_with_borders[[5]] | plots_with_borders[[6]] | plots_with_borders[[7]]
+
+# Row 3: Temperature & Precipitation (3 Plots)
+# Min Temp | Precip | Lagged Precip
+row3 <- plots_with_borders[[8]] | plots_with_borders[[9]] | plots_with_borders[[10]]
+
+# Row 4: Wind & Other Controls (4 Plots)
+# Wind | Lagged Wind | Year | Fire
+row4 <- plots_with_borders[[11]] | plots_with_borders[[12]] | plots_with_borders[[13]] | plots_with_borders[[14]]
+
+# --- Combine All Rows ---
+final_dashboard <- row1 / row2 / row3 / row4
+
+# Add a main title and display
+final_dashboard + 
+  plot_annotation(
+    title = 'Diagnostic Dashboard: Max Temp Regression Model',
+    subtitle = 'Row 1: Model Fit | Row 2: Seasonality (Sin/Cos) | Rows 3-4: Physical Predictors',
+    theme = theme(plot.title = element_text(size = 20, face = "bold"))
+  )
+```
+
+```{r}
+pairs(plot_df[c(3,5,7:10,12:14)])
+```
+Assumptions Checking ends
+### Assumptions Validating_Step 1
+
+```{r}
+# based on "correcting the worst violation first" from lecture, we fix the normality first by apply boxcox transformation on response
+pre_model <- lm(MAX_TEMP ~ Day_Sin + Day_Cos + MIN_TEMP + AVG_WIND_SPEED + LAGGED_PRECIPITATION + Day_Cos:MIN_TEMP + Day_Cos:AVG_WIND_SPEED +
+    LAGGED_AVG_WIND_SPEED + FIRE_START_DAY + PRECIPITATION + AVG_WIND_SPEED:PRECIPITATION + LAGGED_PRECIPITATION:PRECIPITATION + MIN_TEMP:LAGGED_PRECIPITATION +
+    YEAR_adj, data = CData)
+boxcox(pre_model)
+# Then fixing the non constant variance violation on predictors using powerTransFormation, using bcnPower for predictors containing 0
+powerTransform(CData$PRECIPITATION, family = 'bcnPower')
+powerTransform(CData$LAGGED_PRECIPITATION, family = 'bcnPower')
+powerTransform(CData$AVG_WIND_SPEED, family = 'bcPower')
+```
+
+Assumptions Validating ends
+
+### Diagnostics
+
+```{r}
+# multicollinearity, look at the third term (adjusted gvif) if its greater than 2.5, the outputs suggests no muticollinearity presents, the value beyond the cufoff is called structural multicollinearity
+# and its mathematical harmless
+vif(final_model, type = 'predictor')
+```
+```{r}
+# assessing problematic observations
+p <- length(coef(final_model)) - 1
+n <- nrow(CData)
+# leverages cutoff
+hii_cutoff <- 2 * (p + 1)/n
+# standardized residuals cutoff is [-4, 4]
+# Cook's difference cutoff
+Di_cutoff <- qf(0.5, p + 1, n - p - 1)
+#DFFITS cutoff
+dffits_cutoff <- 2 * sqrt((p + 1)/n)
+#DFBETAS cutoff
+dfbetas_cutoff <- 2/sqrt(n)
+```
+
+
+```{r}
+# assessing problematic observations
+hii <- hatvalues(final_model)
+ri <- rstandard(final_model)
+Di <- cooks.distance(final_model)
+dffits <- dffits(final_model)
+dfbetas <- dfbetas(final_model)
+# leverages
+leverages <- which(hii > hii_cutoff)
+# outliers
+outliers <- which(ri < -4 | ri > 4)
+# influence points:
+# Cook's distance 
+affect_all_fitted <- which(Di > Di_cutoff)
+# DFFITS
+affect_individual_fitted <- which(abs(dffits) > dffits_cutoff)
+# DFBETAS
+
+dfb_long <- as.data.frame(as.table(dfbetas))
+colnames(dfb_long) <- c("Row_Index", "Predictor", "DFBETA_Value")
+
+# 1. Filter for Violations
+# We only keep rows where the absolute value exceeds the cutoff
+violations <- dfb_long[abs(dfb_long$DFBETA_Value) > dfbetas_cutoff, ]
+
+# 2. Sort by Severity (Descending)
+violations <- violations[order(abs(violations$DFBETA_Value), decreasing = TRUE), ]
+
+# 3. View the Top Offenders
+head(violations, 20)
+# Since there's no strong enough evidence to remove the problematic observations (no invalid observations, no extreme values, the range of all observations is consistent with the real world situation). These observations will be kept.
+```
+Diagonostics Ends
+
+### Model Goodness
+
+
+```{r}
+# 1. Calculate AIC and BIC manually
+aic_val <- AIC(my_model)
+bic_val <- BIC(my_model)
+```
+
+
+
+```{r}
+# Model validation and goodness measurements via LOOCV
+Y <- CData$MAX_TEMP_inv
+Y_hat <- final_model$fitted.values
+CV_n <- mean(((Y-Y_hat)/(1-hii))^2)
+CV_n
+# 2.36582e-07, close to the MSE of our model, thus our model is validated.
+```
+Model Goodness ends
+
